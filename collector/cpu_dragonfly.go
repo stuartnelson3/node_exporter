@@ -145,6 +145,7 @@ func (c *statCollector) Update(ch chan<- prometheus.Metric) error {
 	}
 
 	cpuTimesDB := (*[maxCPUTimesLen]C.double)(unsafe.Pointer(cpuTimesD))[:cpuTimesLength:cpuTimesLength]
+	C.free(unsafe.Pointer(cpuTimesD))
 
 	// Export order: user nice sys intr idle
 	cpuFields := []string{"user", "nice", "sys", "interrupt", "idle"}

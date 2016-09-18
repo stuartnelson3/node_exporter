@@ -50,7 +50,7 @@ setupSysctlMIBs() {
 }
 
 int
-getCPUTimes(int *ncpu, char **cputime) {
+getCPUTimes(int *ncpu, char **cputime, double **cpu_times_dbl, size_t *cpu_times_len) {
 	size_t len;
 
 	// Get number of cpu cores.
@@ -61,6 +61,7 @@ getCPUTimes(int *ncpu, char **cputime) {
 	if (sysctl(mib, 2, ncpu, &len, NULL, 0)) {
 		return -1;
 	}
+	*cpu_times_len = (*ncpu)*5;
 
 	// Retrieve clockrate
 	struct clockinfo clockrate;
@@ -86,6 +87,9 @@ getCPUTimes(int *ncpu, char **cputime) {
 	*cputime = (char *) malloc(cputime_size);
 	bzero(*cputime, cputime_size);
 
+	*cpu_times_dbl = (double *) malloc(sizeof(double)*(*cpu_times_len));
+	int cpu_states = 5;
+
 	uint64_t user, nice, sys, intr, idle;
 	user = nice = sys = intr = idle = 0;
 	for (int i = 0; i < *ncpu; ++i) {
@@ -94,6 +98,12 @@ getCPUTimes(int *ncpu, char **cputime) {
 		sys  = ((double) cp_t[i].cp_sys) / freq;
 		intr = ((double) cp_t[i].cp_intr) / freq;
 		idle = ((double) cp_t[i].cp_idle) / freq;
+		int offset = cpu_states * i;
+		(*cpu_times_dbl)[offset] = user;
+		(*cpu_times_dbl)[offset+1] = nice;
+		(*cpu_times_dbl)[offset+2] = sys;
+		(*cpu_times_dbl)[offset+3] = intr;
+		(*cpu_times_dbl)[offset+4] = idle;
 		sprintf(*cputime + strlen(*cputime), "%llu %llu %llu %llu %llu ", user, nice, sys, intr, idle );
 	}
 
@@ -142,26 +152,30 @@ func (c *statCollector) Update(ch chan<- prometheus.Metric) error {
 
 	var ncpu C.int
 	var cpuTimesC *C.char
-	var fieldsCount = 5
+	var cpuTimesD *C.double
+	var cpuTimesLength C.size_t
+	var cpuStates = 5
 
-	if C.getCPUTimes(&ncpu, &cpuTimesC) == -1 {
+	if C.getCPUTimes(&ncpu, &cpuTimesC, &cpuTimesD, &cpuTimesLength) == -1 {
 		return errors.New("could not retrieve CPU times")
 	}
 
 	cpuTimes := strings.Split(strings.TrimSpace(C.GoString(cpuTimesC)), " ")
 	C.free(unsafe.Pointer(cpuTimesC))
-	// TODO: Figure out why the string is always growing
 	fmt.Println(cpuTimes)
+
+	cpuTimesDB := (*[maxCPUTimesLen]C.double)(unsafe.Pointer(cpuTimesD))[:cpuTimesLength:cpuTimesLength]
+	fmt.Println(cpuTimesDB)
 
 	// Export order: user nice sys intr idle
 	cpuFields := []string{"user", "nice", "sys", "interrupt", "idle"}
 	for i, v := range cpuTimes {
-		cpux := fmt.Sprintf("cpu%d", i/fieldsCount)
+		cpux := fmt.Sprintf("cpu%d", i/cpuStates)
 		value, err := strconv.ParseFloat(v, 64)
 		if err != nil {
 			return err
 		}
-		ch <- prometheus.MustNewConstMetric(c.cpu, prometheus.CounterValue, value, cpux, cpuFields[i%fieldsCount])
+		ch <- prometheus.MustNewConstMetric(c.cpu, prometheus.CounterValue, value, cpux, cpuFields[i%cpuStates])
 	}
 
 	return nil
